@@ -215,6 +215,9 @@ class ScheduleParser:
                     text += f"\n📅 {day_name}:\n"
                     for cls in classes:
                         time = f"{cls['time_start']}-{cls['time_end']}"
-                        text += f"  • {time} - {cls['subject']}\n"
+                        subject = cls['subject']
+                        room = cls.get('room', '')
+                        room_text = f" ({room})" if room else ""
+                        text += f"  • {time} - {subject}{room_text}\n"
         
         return text.strip()
