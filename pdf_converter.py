@@ -83,7 +83,7 @@ class PDFConverter:
                 pix = page.get_pixmap(matrix=mat, alpha=False)
                 
                 # Конвертируем в PIL Image для оптимизации
-                img_data = pix.tobytes("jpeg", quality=95)
+                img_data = pix.tobytes("jpeg")  # quality задается при сохранении через PIL
                 img = Image.open(io.BytesIO(img_data))
                 
                 # Уменьшаем если слишком большое
