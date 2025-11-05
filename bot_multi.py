@@ -1652,6 +1652,25 @@ class MultiScheduleBot:
                                 file_info
                             )
                             
+                            # Автоматически перераспознаем расписание через AI
+                            try:
+                                group_name = os.path.splitext(filename)[0]
+                                logger.info(f"🤖 Перераспознаю расписание для {group_name}...")
+                                schedule_data = await asyncio.to_thread(
+                                    self.schedule_parser.parse_schedule_from_pdf,
+                                    file_path
+                                )
+                                
+                                if schedule_data:
+                                    # Сохраняем в БД
+                                    schedule_json = json.dumps(schedule_data, ensure_ascii=False)
+                                    self.db.save_schedule(group_name, schedule_json)
+                                    logger.info(f"✅ Расписание {group_name} обновлено автоматически")
+                                else:
+                                    logger.warning(f"⚠️ Не удалось распознать расписание {group_name}")
+                            except Exception as e:
+                                logger.error(f"❌ Ошибка перераспознавания {filename}: {e}")
+                            
                             # Обновляем версию
                             self.file_versions[file_key] = current_version
                             
