@@ -23,10 +23,20 @@ class Database:
                 course TEXT NOT NULL,
                 group_name TEXT NOT NULL,
                 format_type TEXT DEFAULT 'photo',
+                language TEXT DEFAULT 'ru',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Миграция: добавляем поле language если его нет
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'language' not in columns:
+            cursor.execute('ALTER TABLE users ADD COLUMN language TEXT DEFAULT "ru"')
+        if 'last_active' not in columns:
+            cursor.execute('ALTER TABLE users ADD COLUMN last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
         
         # Таблица чатов (групп)
         cursor.execute('''
@@ -151,7 +161,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT education_type, course, group_name, format_type 
+            SELECT education_type, course, group_name, format_type, language 
             FROM users WHERE user_id = ?
         ''', (user_id,))
         
@@ -163,20 +173,21 @@ class Database:
                 'education_type': row[0],
                 'course': row[1],
                 'group': row[2],
-                'format': row[3]
+                'format': row[3],
+                'language': row[4] if len(row) > 4 else 'ru'
             }
         return None
     
-    def save_user(self, user_id: int, education_type: str, course: str, group: str, format_type: str = "photo"):
+    def save_user(self, user_id: int, education_type: str, course: str, group: str, format_type: str = "photo", language: str = "ru"):
         """Сохранить выбор пользователя"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             INSERT OR REPLACE INTO users 
-            (user_id, education_type, course, group_name, format_type, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (user_id, education_type, course, group, format_type))
+            (user_id, education_type, course, group_name, format_type, language, updated_at, last_active)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''', (user_id, education_type, course, group, format_type, language))
         
         conn.commit()
         conn.close()
@@ -807,3 +818,205 @@ class Database:
         
         conn.commit()
         conn.close()
+    
+    # ==================== ЯЗЫКИ ====================
+    
+    def get_user_language(self, user_id: int) -> str:
+        """Получить язык пользователя (по умолчанию ru)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT language FROM users WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        return row[0] if row and row[0] else 'ru'
+    
+    def set_user_language(self, user_id: int, language: str):
+        """Установить язык пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users 
+            SET language = ?, updated_at = CURRENT_TIMESTAMP 
+            WHERE user_id = ?
+        ''', (language, user_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def update_user_activity(self, user_id: int):
+        """Обновить время последней активности пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users 
+            SET last_active = CURRENT_TIMESTAMP 
+            WHERE user_id = ?
+        ''', (user_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    # ==================== АНАЛИТИКА ====================
+    
+    def get_popular_groups(self, limit: int = 10) -> List[Dict]:
+        """Получить самые популярные группы"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT group_name, education_type, course, COUNT(*) as user_count
+            FROM users
+            GROUP BY group_name, education_type, course
+            ORDER BY user_count DESC
+            LIMIT ?
+        ''', (limit,))
+        
+        groups = []
+        for row in cursor.fetchall():
+            groups.append({
+                'group': row[0],
+                'education_type': row[1],
+                'course': row[2],
+                'users': row[3]
+            })
+        
+        conn.close()
+        return groups
+    
+    def get_activity_stats(self, days: int = 7) -> Dict:
+        """Получить статистику активности за последние N дней"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Активные пользователи за период
+        cursor.execute('''
+            SELECT DATE(last_active) as date, COUNT(DISTINCT user_id) as active_users
+            FROM users
+            WHERE last_active >= datetime('now', '-' || ? || ' days')
+            GROUP BY DATE(last_active)
+            ORDER BY date DESC
+        ''', (days,))
+        
+        daily_activity = []
+        for row in cursor.fetchall():
+            daily_activity.append({
+                'date': row[0],
+                'active_users': row[1]
+            })
+        
+        # Действия пользователей
+        cursor.execute('''
+            SELECT action, COUNT(*) as count
+            FROM user_logs
+            WHERE timestamp >= datetime('now', '-' || ? || ' days')
+            GROUP BY action
+            ORDER BY count DESC
+        ''', (days,))
+        
+        actions = []
+        for row in cursor.fetchall():
+            actions.append({
+                'action': row[0],
+                'count': row[1]
+            })
+        
+        conn.close()
+        return {
+            'daily_activity': daily_activity,
+            'actions': actions
+        }
+    
+    def get_peak_hours(self) -> List[Dict]:
+        """Получить пиковые часы использования бота"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT strftime('%H', timestamp) as hour, COUNT(*) as count
+            FROM user_logs
+            WHERE timestamp >= datetime('now', '-30 days')
+            GROUP BY hour
+            ORDER BY hour
+        ''')
+        
+        hours = []
+        for row in cursor.fetchall():
+            hours.append({
+                'hour': int(row[0]),
+                'count': row[1]
+            })
+        
+        conn.close()
+        return hours
+    
+    def get_conversion_stats(self) -> Dict:
+        """Получить статистику конверсии"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Всего зарегистрировано
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_registered = cursor.fetchone()[0]
+        
+        # Активных за последние 7 дней
+        cursor.execute('''
+            SELECT COUNT(*) FROM users 
+            WHERE last_active >= datetime('now', '-7 days')
+        ''')
+        active_7_days = cursor.fetchone()[0]
+        
+        # Активных за последние 30 дней
+        cursor.execute('''
+            SELECT COUNT(*) FROM users 
+            WHERE last_active >= datetime('now', '-30 days')
+        ''')
+        active_30_days = cursor.fetchone()[0]
+        
+        # С включенными уведомлениями
+        cursor.execute('''
+            SELECT COUNT(*) FROM notification_settings 
+            WHERE enabled = 1
+        ''')
+        with_notifications = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        conversion_7 = (active_7_days / total_registered * 100) if total_registered > 0 else 0
+        conversion_30 = (active_30_days / total_registered * 100) if total_registered > 0 else 0
+        notif_rate = (with_notifications / total_registered * 100) if total_registered > 0 else 0
+        
+        return {
+            'total_registered': total_registered,
+            'active_7_days': active_7_days,
+            'active_30_days': active_30_days,
+            'with_notifications': with_notifications,
+            'conversion_7_days': round(conversion_7, 1),
+            'conversion_30_days': round(conversion_30, 1),
+            'notification_rate': round(notif_rate, 1)
+        }
+    
+    def get_language_distribution(self) -> List[Dict]:
+        """Получить распределение пользователей по языкам"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT language, COUNT(*) as count
+            FROM users
+            GROUP BY language
+            ORDER BY count DESC
+        ''')
+        
+        languages = []
+        for row in cursor.fetchall():
+            languages.append({
+                'language': row[0],
+                'count': row[1]
+            })
+        
+        conn.close()
+        return languages
