@@ -1673,8 +1673,8 @@ class MultiScheduleBot:
                         minutes_until = next_class.get('minutes_until', 999)
                         class_time = next_class.get('time_start', '')
                         
-                        # Проверяем: пора ли отправлять уведомление?
-                        if minutes_before <= minutes_until <= minutes_before + 1:
+                        # Проверяем: пора ли отправлять уведомление? (РОВНО за N минут)
+                        if minutes_until == minutes_before:
                             # Проверяем не отправляли ли уже сегодня для этой пары
                             if not self.db.was_notification_sent(user_id, class_time, current_date):
                                 try:
