@@ -19,12 +19,20 @@ class ScheduleParser:
     
     def __init__(self):
         self.api_key = os.getenv('GEMINI_API_KEY')
+        self.model = None
+        self.is_available = False
+        
         if self.api_key:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
+            try:
+                genai.configure(api_key=self.api_key)
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
+                self.is_available = True
+                logger.info("✅ Gemini AI подключен и готов к работе")
+            except Exception as e:
+                logger.error(f"❌ Ошибка инициализации Gemini API: {e}")
+                self.is_available = False
         else:
-            logger.warning("GEMINI_API_KEY не найден в .env")
-            self.model = None
+            logger.info("ℹ️ GEMINI_API_KEY не настроен. AI-распознавание недоступно.")
     
     def parse_schedule_from_image(self, image_path: str) -> Optional[Dict]:
         """
@@ -40,8 +48,8 @@ class ScheduleParser:
             ...
         }
         """
-        if not self.model:
-            logger.error("Gemini API не настроен")
+        if not self.is_available or not self.model:
+            logger.warning("⚠️ Gemini API недоступен. AI-распознавание отключено.")
             return None
         
         try:
