@@ -29,6 +29,7 @@ from folder_structure import EDUCATION_TYPES, COURSES, COURSE_DISPLAY, GROUP_PAT
 from drive_scanner import DriveScanner
 from schedule_parser import ScheduleParser
 from notification_manager import NotificationManager
+from localization import Localization, _
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -71,6 +72,34 @@ class MultiScheduleBot:
         self.groups_cache = {}  # Кеш списка групп {education_course: data}
         self.cache_timestamps = {}  # Временные метки кеша
         self.cache_ttl = 1800  # 30 минут
+    
+    # ==================== ЛОКАЛИЗАЦИЯ ====================
+    
+    def get_user_language(self, user_id: int) -> str:
+        """Получить язык пользователя"""
+        return self.db.get_user_language(user_id)
+    
+    def _(self, key: str, user_id: int = None, language: str = None, **kwargs) -> str:
+        """Вспомогательный метод для получения перевода"""
+        if language is None and user_id:
+            language = self.get_user_language(user_id)
+        elif language is None:
+            language = 'ru'
+        return Localization.get(key, language, **kwargs)
+    
+    async def detect_and_save_language(self, update: Update):
+        """Определить и сохранить язык пользователя"""
+        user_id = update.effective_user.id
+        user_data = self.db.get_user(user_id)
+        
+        # Если пользователь уже зарегистрирован, не меняем язык
+        if user_data and user_data.get('language'):
+            return
+        
+        # Определяем язык по настройкам Telegram
+        detected_lang = Localization.detect_language(update.effective_user)
+        self.db.set_user_language(user_id, detected_lang)
+        logger.info(f"🌐 Автоматически установлен язык {detected_lang} для пользователя {user_id}")
     
     # ==================== УМНЫЙ ПОИСК ====================
     
@@ -739,13 +768,19 @@ class MultiScheduleBot:
         user_id = update.effective_user.id
         group = context.user_data['group']
         
+        # Автоопределение языка
+        detected_lang = Localization.detect_language(update.effective_user)
+        
         self.db.save_user(
             user_id=user_id,
             education_type=context.user_data['education_type'],
             course=context.user_data['course'],
             group=group,
-            format_type=format_type
+            format_type=format_type,
+            language=detected_lang
         )
+        
+        logger.info(f"🌐 Автоматически установлен язык {detected_lang} для пользователя {user_id}")
         
         # Логируем регистрацию
         self.db.log_action(user_id, 'registered', f'Группа: {group}, Формат: {format_type}')
@@ -1286,6 +1321,7 @@ class MultiScheduleBot:
         
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton("📈 Расширенная аналитика", callback_data="admin_analytics")],
             [InlineKeyboardButton("👥 Список групп", callback_data="admin_chats")],
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton("⏰ Интервал проверки", callback_data="admin_interval")],
@@ -2203,6 +2239,139 @@ class MultiScheduleBot:
             InlineKeyboardButton("« Главное меню", callback_data="back_to_menu")
         ]])
     
+    # ==================== КОМАНДА СМЕНЫ ЯЗЫКА ====================
+    
+    async def language_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выбор языка"""
+        user_id = update.effective_user.id
+        current_lang = self.get_user_language(user_id)
+        
+        text = self._(('start', current_lang))
+        
+        available_langs = Localization.get_available_languages()
+        keyboard = []
+        for lang_code, lang_name in available_langs.items():
+            # Отмечаем текущий язык
+            if lang_code == current_lang:
+                lang_name = f"✅ {lang_name}"
+            keyboard.append([InlineKeyboardButton(lang_name, callback_data=f"lang_{lang_code}")])
+        
+        keyboard.append([InlineKeyboardButton(self._('back', user_id), callback_data="back_to_menu")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+    
+    async def set_language(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Установить язык пользователя"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        lang_code = query.data.replace('lang_', '')
+        
+        # Сохраняем язык
+        self.db.set_user_language(user_id, lang_code)
+        
+        # Уведомляем
+        message = self._('language_changed', user_id)
+        
+        await query.edit_message_text(
+            message,
+            parse_mode='Markdown'
+        )
+        
+        # Показываем главное меню
+        await asyncio.sleep(1)
+        await self.start_command(update, context)
+    
+    # ==================== РАСШИРЕННАЯ АНАЛИТИКА ====================
+    
+    async def admin_analytics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Расширенная аналитика для админа"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        lang = self.get_user_language(user_id)
+        
+        # Получаем данные
+        popular_groups = self.db.get_popular_groups(10)
+        activity = self.db.get_activity_stats(7)
+        peak_hours = self.db.get_peak_hours()
+        conversion = self.db.get_conversion_stats()
+        lang_dist = self.db.get_language_distribution()
+        
+        text = f"📊 *{self._('analytics', user_id)}*\n\n"
+        
+        # 1. Популярные группы
+        if popular_groups:
+            text += f"*{self._('popular_groups', user_id)}*\n"
+            for idx, group_data in enumerate(popular_groups[:5], 1):
+                group = group_data['group']
+                users = group_data['users']
+                text += f"  {idx}. {group}: {users} чел.\n"
+            text += "\n"
+        
+        # 2. Активность за 7 дней
+        if activity['daily_activity']:
+            text += f"*{self._('user_activity', user_id)}*\n"
+            for day_data in activity['daily_activity'][:5]:
+                date = day_data['date']
+                count = day_data['active_users']
+                text += f"  • {date}: {count} чел.\n"
+            text += "\n"
+        
+        # 3. Пиковые часы
+        if peak_hours:
+            text += f"*{self._('peak_hours', user_id)}*\n"
+            # Находим топ-5 часов
+            sorted_hours = sorted(peak_hours, key=lambda x: x['count'], reverse=True)[:5]
+            for hour_data in sorted_hours:
+                hour = hour_data['hour']
+                count = hour_data['count']
+                # Создаем простой ASCII график
+                bar = "▓" * min(int(count / 10), 20)
+                text += f"  {hour:02d}:00 {bar} {count}\n"
+            text += "\n"
+        
+        # 4. Конверсия
+        text += f"*{self._('conversion_stats', user_id)}*\n"
+        text += f"  • {self._('registered', user_id)}: {conversion['total_registered']}\n"
+        text += f"  • {self._('active_7_days', user_id)}: {conversion['active_7_days']} ({conversion['conversion_7_days']}%)\n"
+        text += f"  • {self._('active_30_days', user_id)}: {conversion['active_30_days']} ({conversion['conversion_30_days']}%)\n"
+        text += f"  • {self._('with_notifications', user_id)}: {conversion['with_notifications']} ({conversion['notification_rate']}%)\n\n"
+        
+        # 5. Распределение по языкам
+        if lang_dist:
+            text += f"*{self._('language_distribution', user_id)}*\n"
+            lang_names = {'ru': '🇷🇺 Русский', 'uz': '🇺🇿 O\'zbekcha', 'en': '🇬🇧 English'}
+            for lang_data in lang_dist:
+                lang_code = lang_data['language']
+                count = lang_data['count']
+                lang_name = lang_names.get(lang_code, lang_code)
+                text += f"  • {lang_name}: {count}\n"
+        
+        keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
     # ==================== НАСТРОЙКА И ЗАПУСК ====================
     
     async def post_init(self, application: Application):
@@ -2223,6 +2392,7 @@ class MultiScheduleBot:
         self.app.add_handler(CommandHandler("setupgroup", self.setup_group_command))
         self.app.add_handler(CommandHandler("getchatid", self.get_chat_id))
         self.app.add_handler(CommandHandler("help", self.help_command))
+        self.app.add_handler(CommandHandler("language", self.language_command))
         
         # Callback handlers
         self.app.add_handler(CallbackQueryHandler(self.start_command, pattern="^back_to_menu$"))
@@ -2237,9 +2407,14 @@ class MultiScheduleBot:
         
         self.app.add_handler(CallbackQueryHandler(self.admin_panel, pattern="^admin_panel$"))
         self.app.add_handler(CallbackQueryHandler(self.admin_stats, pattern="^admin_stats$"))
+        self.app.add_handler(CallbackQueryHandler(self.admin_analytics, pattern="^admin_analytics$"))
         self.app.add_handler(CallbackQueryHandler(self.admin_clear_cache, pattern="^admin_clear_cache$"))
         self.app.add_handler(CallbackQueryHandler(self.admin_broadcast, pattern="^admin_broadcast$"))
         self.app.add_handler(CallbackQueryHandler(self.confirm_broadcast, pattern="^confirm_broadcast$"))
+        
+        # Языки
+        self.app.add_handler(CallbackQueryHandler(self.language_command, pattern="^change_language$"))
+        self.app.add_handler(CallbackQueryHandler(self.set_language, pattern="^lang_"))
         
         # ConversationHandler для настройки
         setup_handler = ConversationHandler(
