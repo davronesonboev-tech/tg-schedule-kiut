@@ -37,6 +37,7 @@ class Database:
                 group_name TEXT NOT NULL,
                 file_name TEXT NOT NULL,
                 format_type TEXT DEFAULT 'photo',
+                pinned_schedule_message_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -92,6 +93,7 @@ class Database:
                 minutes_before INTEGER DEFAULT 10,
                 timezone TEXT DEFAULT 'Asia/Tashkent',
                 daily_message_id INTEGER,
+                pinned_schedule_message_id INTEGER,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         ''')
@@ -738,3 +740,70 @@ class Database:
         conn.close()
         
         return deleted
+    
+    def get_pinned_schedule_message_id(self, user_id: int) -> Optional[int]:
+        """Получить ID закрепленного расписания"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT pinned_schedule_message_id 
+            FROM notification_settings 
+            WHERE user_id = ?
+        ''', (user_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        return row[0] if row and row[0] else None
+    
+    def save_pinned_schedule_message_id(self, user_id: int, message_id: int):
+        """Сохранить ID закрепленного расписания для пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Создаем запись если не существует
+        cursor.execute('''
+            INSERT OR IGNORE INTO notification_settings (user_id, pinned_schedule_message_id)
+            VALUES (?, ?)
+        ''', (user_id, message_id))
+        
+        # Обновляем если существует
+        cursor.execute('''
+            UPDATE notification_settings 
+            SET pinned_schedule_message_id = ? 
+            WHERE user_id = ?
+        ''', (message_id, user_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_chat_pinned_message_id(self, chat_id: int) -> Optional[int]:
+        """Получить ID закрепленного расписания для чата"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT pinned_schedule_message_id 
+            FROM chats 
+            WHERE chat_id = ?
+        ''', (chat_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        return row[0] if row and row[0] else None
+    
+    def save_chat_pinned_message_id(self, chat_id: int, message_id: int):
+        """Сохранить ID закрепленного расписания для чата"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE chats 
+            SET pinned_schedule_message_id = ? 
+            WHERE chat_id = ?
+        ''', (message_id, chat_id))
+        
+        conn.commit()
+        conn.close()
