@@ -91,9 +91,25 @@ class Database:
                 enabled BOOLEAN DEFAULT 1,
                 minutes_before INTEGER DEFAULT 10,
                 timezone TEXT DEFAULT 'Asia/Tashkent',
+                daily_message_id INTEGER,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         ''')
+        
+        # Таблица отправленных уведомлений (чтобы не дублировать)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sent_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                class_time TEXT NOT NULL,
+                date TEXT NOT NULL,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, class_time, date)
+            )
+        ''')
+        
+        # Индекс для быстрой очистки старых уведомлений
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_notif_date ON sent_notifications(date)')
         
         # Добавляем дефолтного админа если БД пустая
         cursor.execute('SELECT COUNT(*) FROM admins')
@@ -630,7 +646,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT u.user_id, u.group_name, ns.minutes_before, ns.timezone
+            SELECT u.user_id, u.group_name, ns.minutes_before, ns.timezone, ns.daily_message_id
             FROM users u
             JOIN notification_settings ns ON u.user_id = ns.user_id
             WHERE ns.enabled = 1
@@ -642,8 +658,83 @@ class Database:
                 'user_id': row[0],
                 'group': row[1],
                 'minutes_before': row[2],
-                'timezone': row[3]
+                'timezone': row[3],
+                'daily_message_id': row[4]
             })
         
         conn.close()
         return users
+    
+    def save_daily_message_id(self, user_id: int, message_id: int):
+        """Сохранить ID ежедневного сообщения с расписанием"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE notification_settings 
+            SET daily_message_id = ? 
+            WHERE user_id = ?
+        ''', (message_id, user_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_daily_message_id(self, user_id: int) -> Optional[int]:
+        """Получить ID ежедневного сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT daily_message_id 
+            FROM notification_settings 
+            WHERE user_id = ?
+        ''', (user_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        return row[0] if row and row[0] else None
+    
+    def was_notification_sent(self, user_id: int, class_time: str, date: str) -> bool:
+        """Проверить было ли уже отправлено уведомление для этой пары"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT COUNT(*) FROM sent_notifications
+            WHERE user_id = ? AND class_time = ? AND date = ?
+        ''', (user_id, class_time, date))
+        
+        count = cursor.fetchone()[0]
+        conn.close()
+        
+        return count > 0
+    
+    def mark_notification_sent(self, user_id: int, class_time: str, date: str):
+        """Отметить что уведомление было отправлено"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO sent_notifications (user_id, class_time, date)
+            VALUES (?, ?, ?)
+        ''', (user_id, class_time, date))
+        
+        conn.commit()
+        conn.close()
+    
+    def cleanup_old_notifications(self, days: int = 7):
+        """Очистить старые записи об отправленных уведомлениях"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM sent_notifications
+            WHERE date < date('now', '-' || ? || ' days')
+        ''', (days,))
+        
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        return deleted
