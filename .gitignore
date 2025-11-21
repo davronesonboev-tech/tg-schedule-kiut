@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+
+# Environment variables
+.env
+config.env
+
+# Database
+bot_database.db
+bot_database.db-journal
+*.db
+*.db-journal
+
+# Logs
+*.log
+bot.log
+
+# Temporary files
+temp_*/
+*.tmp
+*.temp
+
+# Images
+*.jpg
+*.jpeg
+*.png
+temp_images/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Railway
+.railway/
+
+# Backups
+backup_*
+*.backup
+*.bak
+
+# Test files
+test_*.py
+*_test.py
+
+# Cache
+.cache/
+*.cache
