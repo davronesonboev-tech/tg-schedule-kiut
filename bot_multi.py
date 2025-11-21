@@ -1509,54 +1509,104 @@ class MultiScheduleBot:
     # ==================== АВТОПРОВЕРКА ОБНОВЛЕНИЙ ====================
     
     async def check_class_notifications(self, context: ContextTypes.DEFAULT_TYPE = None):
-        """Проверка времени пар и отправка уведомлений (запускается каждую минуту)"""
+        """
+        НОВАЯ ЛОГИКА: Одно сообщение с расписанием на день
+        - Утром отправляет расписание на день
+        - Обновляет сообщение каждую минуту (выделяет следующую пару)
+        - Нет спама в чате!
+        """
         try:
+            from datetime import datetime
+            
             # Получаем всех пользователей с включенными уведомлениями
             users = self.db.get_users_with_notifications_enabled()
             
             if not users:
-                return  # Никому не нужно отправлять
+                return
             
-            logger.debug(f"Проверка уведомлений для {len(users)} пользователей...")
+            current_hour = datetime.now().hour
+            current_time = datetime.now().strftime("%H:%M")
             
             for user in users:
                 try:
                     user_id = user['user_id']
                     group = user['group']
-                    minutes_before = user['minutes_before']
-                    timezone = user['timezone']
+                    daily_message_id = user.get('daily_message_id')
                     
                     # Получаем расписание группы
                     schedule_json = self.db.get_schedule(group)
                     
                     if not schedule_json:
-                        continue  # Расписание не распознано
+                        continue
                     
-                    # Получаем следующую пару
-                    next_class = NotificationManager.get_next_class(schedule_json, timezone)
+                    # Формируем сообщение с расписанием на день
+                    message_text = NotificationManager.format_daily_schedule(
+                        schedule_json, 
+                        group, 
+                        highlight_next=True
+                    )
                     
-                    if not next_class:
-                        continue  # Пар сегодня больше нет
-                    
-                    # Проверяем нужно ли отправлять уведомление
-                    if NotificationManager.should_send_notification(next_class, minutes_before):
-                        # Отправляем уведомление!
-                        message = NotificationManager.format_notification_message(next_class)
-                        
+                    # Утром (7:00-7:30) или если нет сообщения - отправляем новое
+                    if (current_hour == 7 and daily_message_id is None) or daily_message_id is None:
                         try:
-                            await self.app.bot.send_message(
+                            sent_message = await self.app.bot.send_message(
                                 chat_id=user_id,
-                                text=message,
+                                text=message_text,
                                 parse_mode='Markdown'
                             )
-                            logger.info(f"📢 Уведомление отправлено пользователю {user_id} о паре {next_class['subject']}")
                             
-                            # Логируем
-                            self.db.log_action(user_id, 'notification_sent', f"Пара: {next_class['subject']}")
+                            # Закрепляем сообщение
+                            try:
+                                await self.app.bot.pin_chat_message(
+                                    chat_id=user_id,
+                                    message_id=sent_message.message_id,
+                                    disable_notification=True
+                                )
+                            except:
+                                pass  # Не критично если не получилось закрепить
+                            
+                            # Сохраняем ID сообщения
+                            self.db.save_daily_message_id(user_id, sent_message.message_id)
+                            
+                            logger.info(f"📅 Отправлено ежедневное расписание для {user_id} (группа {group})")
                             
                         except Exception as e:
-                            logger.error(f"Ошибка отправки уведомления {user_id}: {e}")
-                
+                            logger.error(f"Ошибка отправки ежедневного расписания {user_id}: {e}")
+                    
+                    # В течение дня - обновляем существующее сообщение (каждые 5 минут или перед парой)
+                    elif daily_message_id:
+                        # Обновляем только если есть изменения (следующая пара близко)
+                        next_class = NotificationManager.get_next_class(schedule_json, user['timezone'])
+                        
+                        # Обновляем если:
+                        # 1. До следующей пары < 15 минут
+                        # 2. Каждые 5 минут в рабочее время (8:00-18:00)
+                        should_update = False
+                        
+                        if next_class and next_class.get('minutes_until', 999) < 15:
+                            should_update = True
+                        elif 8 <= current_hour <= 18 and datetime.now().minute % 5 == 0:
+                            should_update = True
+                        
+                        if should_update:
+                            try:
+                                await self.app.bot.edit_message_text(
+                                    chat_id=user_id,
+                                    message_id=daily_message_id,
+                                    text=message_text,
+                                    parse_mode='Markdown'
+                                )
+                                logger.debug(f"🔄 Обновлено расписание для {user_id}")
+                            except Exception as e:
+                                # Если не удалось обновить (сообщение удалено) - отправляем новое
+                                if "message to edit not found" in str(e).lower():
+                                    self.db.save_daily_message_id(user_id, None)
+                    
+                    # В конце дня (после 22:00) - сбрасываем ID чтобы завтра отправить новое
+                    if current_hour >= 22 and daily_message_id:
+                        self.db.save_daily_message_id(user_id, None)
+                        logger.debug(f"🌙 Сброшено ежедневное сообщение для {user_id}")
+                    
                 except Exception as e:
                     logger.error(f"Ошибка обработки пользователя {user.get('user_id')}: {e}")
                     continue
@@ -1565,13 +1615,20 @@ class MultiScheduleBot:
             logger.error(f"Ошибка check_class_notifications: {e}")
     
     async def cleanup_old_logs(self, context: ContextTypes.DEFAULT_TYPE = None):
-        """Автоматическая очистка старых логов"""
+        """Автоматическая очистка старых логов и уведомлений"""
         try:
-            logger.info("🗑️ Начало очистки старых логов...")
-            deleted = self.db.cleanup_old_logs(days=30)
-            logger.info(f"✅ Удалено старых логов: {deleted}")
+            logger.info("🗑️ Начало очистки старых данных...")
+            
+            # Очищаем логи
+            deleted_logs = self.db.cleanup_old_logs(days=30)
+            logger.info(f"✅ Удалено старых логов: {deleted_logs}")
+            
+            # Очищаем старые записи об уведомлениях
+            deleted_notif = self.db.cleanup_old_notifications(days=7)
+            logger.info(f"✅ Удалено старых уведомлений: {deleted_notif}")
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка очистки логов: {e}")
+            logger.error(f"❌ Ошибка очистки: {e}")
     
     async def check_all_schedules(self, context: ContextTypes.DEFAULT_TYPE = None):
         """Улучшенная проверка обновлений для всех групп"""
@@ -1721,9 +1778,15 @@ class MultiScheduleBot:
     
     async def _send_to_subscribed_chats(self, file_path: str, filename: str, 
                                        education_type: str, file_info: dict) -> int:
-        """Отправка файла во все подписанные чаты. Возвращает количество успешных отправок"""
-        all_chats = self.db.get_all_chats()
+        """
+        Отправка файла во все подписанные чаты И ПОЛЬЗОВАТЕЛЯМ  
+        Возвращает количество успешных отправок
+        """
         sent_count = 0
+        group_name_from_file = os.path.splitext(filename)[0]  # ISE-74R.pdf -> ISE-74R
+        
+        # 1. ОТПРАВЛЯЕМ В ГРУППЫ/КАНАЛЫ
+        all_chats = self.db.get_all_chats()
         
         for chat_id_str, chat_data in all_chats.items():
             try:
@@ -1763,6 +1826,49 @@ class MultiScheduleBot:
                 
             except Exception as e:
                 logger.error(f"   ❌ Ошибка отправки в чат {chat_id_str}: {e}")
+        
+        # 2. ОТПРАВЛЯЕМ ПОЛЬЗОВАТЕЛЯМ с этой группой
+        all_users = self.db.get_all_users()
+        
+        for user_data in all_users:
+            # Проверяем что это нужная группа
+            if user_data.get('group') != group_name_from_file:
+                continue
+            
+            try:
+                user_id = user_data['user_id']
+                format_type = user_data.get('format', 'photo')
+                
+                caption = (
+                    f"🆕 *Обновлено расписание!*\n\n"
+                    f"📅 Ваша группа: *{group_name_from_file}*\n"
+                    f"📆 Обновлено: {file_info.get('modified_time', 'Сейчас')}\n\n"
+                    f"💡 _Расписание автоматически обновлено в Google Drive_"
+                )
+                
+                # Отправляем в нужном формате
+                if format_type == 'photo':
+                    await self._send_schedule_as_photo(
+                        user_id,
+                        file_path,
+                        caption
+                    )
+                else:
+                    await self._send_schedule_as_pdf(
+                        user_id,
+                        file_path,
+                        filename,
+                        caption
+                    )
+                
+                sent_count += 1
+                logger.info(f"   📤 Отправлено пользователю {user_id} (группа {group_name_from_file})")
+                
+                # Небольшая задержка против rate limit
+                await asyncio.sleep(0.05)
+                
+            except Exception as e:
+                logger.error(f"   ❌ Ошибка отправки пользователю {user_data['user_id']}: {e}")
         
         return sent_count
     
