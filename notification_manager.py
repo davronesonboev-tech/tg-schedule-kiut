@@ -157,7 +157,6 @@ class NotificationManager:
                 )
             
             # Заголовок
-            from datetime import datetime
             today_str = now.strftime("%d.%m.%Y")
             weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
             weekday = weekday_names[now.weekday()]
