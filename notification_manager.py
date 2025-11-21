@@ -125,4 +125,100 @@ class NotificationManager:
         message += f"\n💨 Не опаздывай!"
         
         return message
+    
+    @staticmethod
+    def format_daily_schedule(schedule_json: str, group_name: str, highlight_next: bool = True) -> str:
+        """
+        Форматировать расписание на день (ОДНО сообщение)
+        
+        Args:
+            schedule_json: JSON с расписанием
+            group_name: Название группы
+            highlight_next: Выделить следующую пару
+        
+        Returns:
+            Форматированное сообщение
+        """
+        try:
+            schedule = json.loads(schedule_json)
+            
+            # Текущее время
+            now = datetime.now()
+            
+            # Получаем расписание на сегодня
+            day_key = NotificationManager.get_current_weekday_key()
+            today_classes = schedule.get(day_key, [])
+            
+            if not today_classes:
+                return (
+                    f"📅 *Расписание на сегодня*\n"
+                    f"👥 Группа: *{group_name}*\n\n"
+                    f"🎉 Сегодня пар нет! Отдыхай!"
+                )
+            
+            # Заголовок
+            from datetime import datetime
+            today_str = now.strftime("%d.%m.%Y")
+            weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+            weekday = weekday_names[now.weekday()]
+            
+            message = (
+                f"📅 *Расписание на {weekday}*\n"
+                f"📆 {today_str}\n"
+                f"👥 Группа: *{group_name}*\n\n"
+            )
+            
+            # Ищем следующую пару
+            next_class_index = None
+            if highlight_next:
+                for idx, cls in enumerate(today_classes):
+                    class_time = NotificationManager.parse_time(cls['time_start'])
+                    if class_time and class_time > now:
+                        next_class_index = idx
+                        break
+            
+            # Форматируем каждую пару
+            for idx, cls in enumerate(today_classes):
+                time = f"{cls['time_start']}-{cls['time_end']}"
+                subject = cls['subject']
+                room = cls.get('room', '')
+                
+                # Проверяем прошла ли пара
+                class_time = NotificationManager.parse_time(cls['time_start'])
+                is_past = class_time and class_time < now
+                is_next = idx == next_class_index
+                
+                if is_past:
+                    # Зачеркнутая пройденная пара
+                    message += f"~~{time}~~ ✅\n"
+                    message += f"~~{subject}~~\n"
+                    if room:
+                        message += f"~~{room}~~\n"
+                elif is_next:
+                    # Следующая пара (выделено)
+                    minutes_until = int((class_time - now).total_seconds() / 60)
+                    message += f"🔔 *{time}* (через {minutes_until} мин)\n"
+                    message += f"📚 *{subject}*\n"
+                    if room:
+                        message += f"🚪 {room}\n"
+                else:
+                    # Будущие пары
+                    message += f"{time}\n"
+                    message += f"📖 {subject}\n"
+                    if room:
+                        message += f"🚪 {room}\n"
+                
+                message += "\n"
+            
+            # Футер
+            if next_class_index is not None:
+                message += "💡 _Сообщение обновляется автоматически_"
+            else:
+                message += "✅ _Все пары на сегодня завершены!_"
+            
+            return message
+            
+        except Exception as e:
+            logger.error(f"Ошибка форматирования ежедневного расписания: {e}")
+            return f"❌ Ошибка отображения расписания"
 
