@@ -1875,23 +1875,54 @@ class MultiScheduleBot:
                     f"⏰ Время: {datetime.now().strftime('%H:%M:%S')}"
                 )
                 
+                # Получаем ID старого закрепленного сообщения
+                old_pinned_id = self.db.get_chat_pinned_message_id(chat_id)
+                
+                # Открепляем старое сообщение
+                if old_pinned_id:
+                    try:
+                        await self.app.bot.unpin_chat_message(
+                            chat_id=chat_id,
+                            message_id=old_pinned_id
+                        )
+                        logger.debug(f"   📌 Откреплено старое сообщение {old_pinned_id} в чате {chat_id}")
+                    except Exception as e:
+                        logger.debug(f"   ⚠️ Не удалось открепить: {e}")
+                
                 # Отправляем в нужном формате
+                sent_message = None
                 if format_type == 'photo':
-                    await self._send_schedule_as_photo(
+                    sent_message = await self._send_schedule_as_photo(
                         chat_id,
                         file_path,
                         caption
                     )
                 else:
-                    await self._send_schedule_as_pdf(
+                    sent_message = await self._send_schedule_as_pdf(
                         chat_id,
                         file_path,
                         filename,
                         caption
                     )
                 
+                # Закрепляем новое сообщение
+                if sent_message:
+                    try:
+                        await self.app.bot.pin_chat_message(
+                            chat_id=chat_id,
+                            message_id=sent_message.message_id,
+                            disable_notification=True  # Без звука
+                        )
+                        # Сохраняем новый ID
+                        self.db.save_chat_pinned_message_id(chat_id, sent_message.message_id)
+                        logger.info(f"   📤📌 Отправлено и закреплено в чате {chat_id}")
+                    except Exception as e:
+                        logger.debug(f"   ⚠️ Не удалось закрепить: {e}")
+                        logger.info(f"   📤 Отправлено в чат {chat_id}")
+                else:
+                    logger.info(f"   📤 Отправлено в чат {chat_id}")
+                
                 sent_count += 1
-                logger.info(f"   📤 Отправлено в чат {chat_id}")
                 
             except Exception as e:
                 logger.error(f"   ❌ Ошибка отправки в чат {chat_id_str}: {e}")
@@ -1915,23 +1946,54 @@ class MultiScheduleBot:
                     f"💡 _Расписание автоматически обновлено в Google Drive_"
                 )
                 
+                # Получаем ID старого закрепленного сообщения
+                old_pinned_id = self.db.get_pinned_schedule_message_id(user_id)
+                
+                # Открепляем старое сообщение
+                if old_pinned_id:
+                    try:
+                        await self.app.bot.unpin_chat_message(
+                            chat_id=user_id,
+                            message_id=old_pinned_id
+                        )
+                        logger.debug(f"   📌 Откреплено старое сообщение {old_pinned_id} у пользователя {user_id}")
+                    except Exception as e:
+                        logger.debug(f"   ⚠️ Не удалось открепить: {e}")
+                
                 # Отправляем в нужном формате
+                sent_message = None
                 if format_type == 'photo':
-                    await self._send_schedule_as_photo(
+                    sent_message = await self._send_schedule_as_photo(
                         user_id,
                         file_path,
                         caption
                     )
                 else:
-                    await self._send_schedule_as_pdf(
+                    sent_message = await self._send_schedule_as_pdf(
                         user_id,
                         file_path,
                         filename,
                         caption
                     )
                 
+                # Закрепляем новое сообщение
+                if sent_message:
+                    try:
+                        await self.app.bot.pin_chat_message(
+                            chat_id=user_id,
+                            message_id=sent_message.message_id,
+                            disable_notification=True  # Без звука
+                        )
+                        # Сохраняем новый ID
+                        self.db.save_pinned_schedule_message_id(user_id, sent_message.message_id)
+                        logger.info(f"   📤📌 Отправлено и закреплено пользователю {user_id} (группа {group_name_from_file})")
+                    except Exception as e:
+                        logger.debug(f"   ⚠️ Не удалось закрепить: {e}")
+                        logger.info(f"   📤 Отправлено пользователю {user_id} (группа {group_name_from_file})")
+                else:
+                    logger.info(f"   📤 Отправлено пользователю {user_id} (группа {group_name_from_file})")
+                
                 sent_count += 1
-                logger.info(f"   📤 Отправлено пользователю {user_id} (группа {group_name_from_file})")
                 
                 # Небольшая задержка против rate limit
                 await asyncio.sleep(0.05)
@@ -1942,7 +2004,7 @@ class MultiScheduleBot:
         return sent_count
     
     async def _send_schedule_as_photo(self, chat_id: int, file_path: str, caption: str):
-        """Отправка расписания как фото в чат"""
+        """Отправка расписания как фото в чат. Возвращает отправленное сообщение."""
         try:
             image_paths = await asyncio.to_thread(
                 self.converter.pdf_to_images,
@@ -1950,22 +2012,28 @@ class MultiScheduleBot:
             )
             
             if not image_paths:
-                await self._send_schedule_as_pdf(
+                return await self._send_schedule_as_pdf(
                     chat_id,
                     file_path,
                     os.path.basename(file_path),
                     caption
                 )
-                return
             
             if len(image_paths) == 1:
                 with open(image_paths[0], 'rb') as photo:
-                    await self.app.bot.send_photo(
+                    sent = await self.app.bot.send_photo(
                         chat_id=chat_id,
                         photo=photo,
                         caption=caption,
                         parse_mode='Markdown'
                     )
+                    # Удаляем временный файл
+                    for img in image_paths:
+                        try:
+                            os.remove(img)
+                        except:
+                            pass
+                    return sent
             else:
                 media_group = []
                 for i, img_path in enumerate(image_paths):
@@ -1977,36 +2045,46 @@ class MultiScheduleBot:
                         )
                         media_group.append(media)
                 
-                await self.app.bot.send_media_group(
+                sent_messages = await self.app.bot.send_media_group(
                     chat_id=chat_id,
                     media=media_group
                 )
+                
+                # Удаляем временные файлы
+                self.converter.cleanup_images(image_paths)
+                
+                # Возвращаем первое сообщение (для закрепления)
+                return sent_messages[0] if sent_messages else None
             
             self.converter.cleanup_images(image_paths)
             
         except Exception as e:
             logger.error(f"Ошибка отправки фото в {chat_id}: {e}")
-            await self._send_schedule_as_pdf(
+            return await self._send_schedule_as_pdf(
                 chat_id,
                 file_path,
                 os.path.basename(file_path),
                 caption
             )
+        
+        return None
     
     async def _send_schedule_as_pdf(self, chat_id: int, file_path: str, 
                                    filename: str, caption: str):
-        """Отправка расписания как PDF в чат"""
+        """Отправка расписания как PDF в чат. Возвращает отправленное сообщение."""
         try:
             with open(file_path, 'rb') as pdf:
-                await self.app.bot.send_document(
+                sent = await self.app.bot.send_document(
                     chat_id=chat_id,
                     document=pdf,
                     filename=filename,
                     caption=caption,
                     parse_mode='Markdown'
                 )
+                return sent
         except Exception as e:
             logger.error(f"Ошибка отправки PDF в {chat_id}: {e}")
+            return None
     
     async def _notify_admin_about_failures(self, failed_files: list):
         """Уведомление админа о критических проблемах"""
