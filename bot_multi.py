@@ -1085,6 +1085,27 @@ class MultiScheduleBot:
         if not user_data:
             return
         
+        # Проверяем доступность AI
+        if not self.parser.is_available:
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="back_to_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                "❌ *AI-распознавание недоступно*\n\n"
+                "🔧 Для работы этой функции нужен `GEMINI_API_KEY`\n\n"
+                "💡 *Как получить:*\n"
+                "1. Перейди на https://aistudio.google.com/app/apikey\n"
+                "2. Создай API ключ\n"
+                "3. Добавь в `.env` файл: `GEMINI_API_KEY=your_key`\n"
+                "4. Перезапусти бота\n\n"
+                "⚠️ Без AI ты всё равно можешь:\n"
+                "• Получать PDF/фото расписания\n"
+                "• Получать уведомления о парах (если расписание уже распознано)\n",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            return
+        
         group = user_data['group']
         filename = f"{group}.pdf"
         
@@ -1778,24 +1799,27 @@ class MultiScheduleBot:
                                 file_info
                             )
                             
-                            # Автоматически перераспознаем расписание через AI
-                            try:
-                                group_name = os.path.splitext(filename)[0]
-                                logger.info(f"🤖 Перераспознаю расписание для {group_name}...")
-                                schedule_data = await asyncio.to_thread(
-                                    self.schedule_parser.parse_schedule_from_pdf,
-                                    file_path
-                                )
-                                
-                                if schedule_data:
-                                    # Сохраняем в БД
-                                    schedule_json = json.dumps(schedule_data, ensure_ascii=False)
-                                    self.db.save_schedule(group_name, schedule_json)
-                                    logger.info(f"✅ Расписание {group_name} обновлено автоматически")
-                                else:
-                                    logger.warning(f"⚠️ Не удалось распознать расписание {group_name}")
-                            except Exception as e:
-                                logger.error(f"❌ Ошибка перераспознавания {filename}: {e}")
+                            # Автоматически перераспознаем расписание через AI (если доступен)
+                            if self.parser.is_available:
+                                try:
+                                    group_name = os.path.splitext(filename)[0]
+                                    logger.info(f"🤖 Перераспознаю расписание для {group_name}...")
+                                    schedule_data = await asyncio.to_thread(
+                                        self.parser.parse_schedule_from_pdf,
+                                        file_path
+                                    )
+                                    
+                                    if schedule_data:
+                                        # Сохраняем в БД
+                                        schedule_json = json.dumps(schedule_data, ensure_ascii=False)
+                                        self.db.save_schedule(group_name, schedule_json)
+                                        logger.info(f"✅ Расписание {group_name} обновлено автоматически")
+                                    else:
+                                        logger.warning(f"⚠️ Не удалось распознать расписание {group_name}")
+                                except Exception as e:
+                                    logger.error(f"❌ Ошибка перераспознавания {filename}: {e}")
+                            else:
+                                logger.debug(f"ℹ️ AI недоступен, пропускаю перераспознавание для {filename}")
                             
                             # Обновляем версию
                             self.file_versions[file_key] = current_version
