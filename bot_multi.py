@@ -1648,12 +1648,17 @@ class MultiScheduleBot:
                                     # Отмечаем что отправили
                                     self.db.mark_notification_sent(user_id, class_time, current_date)
                                     
-                                    # Планируем УДАЛЕНИЕ через 5 минут (не засоряет чат)
+                                    # Планируем УДАЛЕНИЕ через 5 минут ПОСЛЕ НАЧАЛА пары
+                                    # minutes_until (10 мин до пары) + 5 мин после начала = 15 минут
+                                    delete_after = minutes_until + 5
+                                    
                                     self.app.job_queue.run_once(
                                         callback=lambda ctx: self._delete_notification(user_id, sent_notif.message_id),
-                                        when=timedelta(minutes=5),
+                                        when=timedelta(minutes=delete_after),
                                         name=f'delete_notif_{user_id}_{sent_notif.message_id}'
                                     )
+                                    
+                                    logger.debug(f"🗑️ Уведомление будет удалено через {delete_after} мин (в {next_class['time_start']} + 5 мин)")
                                     
                                 except Exception as e:
                                     logger.error(f"Ошибка отправки push-уведомления {user_id}: {e}")
