@@ -1510,13 +1510,13 @@ class MultiScheduleBot:
     
     async def check_class_notifications(self, context: ContextTypes.DEFAULT_TYPE = None):
         """
-        НОВАЯ ЛОГИКА: Одно сообщение с расписанием на день
-        - Утром отправляет расписание на день
-        - Обновляет сообщение каждую минуту (выделяет следующую пару)
-        - Нет спама в чате!
+        УЛУЧШЕННАЯ ЛОГИКА:
+        1. Закрепленное расписание на день (обновляется, всегда наверху)
+        2. Push-уведомления за 10 минут (НОВОЕ сообщение - приходит push!)
+        3. Автоудаление уведомлений через 5 минут (не засоряет чат)
         """
         try:
-            from datetime import datetime
+            from datetime import datetime, timedelta
             
             # Получаем всех пользователей с включенными уведомлениями
             users = self.db.get_users_with_notifications_enabled()
@@ -1525,19 +1525,26 @@ class MultiScheduleBot:
                 return
             
             current_hour = datetime.now().hour
-            current_time = datetime.now().strftime("%H:%M")
+            current_minute = datetime.now().minute
+            current_date = datetime.now().strftime("%Y-%m-%d")
             
             for user in users:
                 try:
                     user_id = user['user_id']
                     group = user['group']
                     daily_message_id = user.get('daily_message_id')
+                    minutes_before = user.get('minutes_before', 10)
+                    timezone = user.get('timezone', 'Asia/Tashkent')
                     
                     # Получаем расписание группы
                     schedule_json = self.db.get_schedule(group)
                     
                     if not schedule_json:
                         continue
+                    
+                    # ============================================
+                    # 1. ЕЖЕДНЕВНОЕ РАСПИСАНИЕ (закрепленное)
+                    # ============================================
                     
                     # Формируем сообщение с расписанием на день
                     message_text = NotificationManager.format_daily_schedule(
@@ -1546,13 +1553,14 @@ class MultiScheduleBot:
                         highlight_next=True
                     )
                     
-                    # Утром (7:00-7:30) или если нет сообщения - отправляем новое
-                    if (current_hour == 7 and daily_message_id is None) or daily_message_id is None:
+                    # Утром (7:00) или если нет сообщения - отправляем новое
+                    if (current_hour == 7 and current_minute < 5 and daily_message_id is None) or (daily_message_id is None and 7 <= current_hour <= 21):
                         try:
                             sent_message = await self.app.bot.send_message(
                                 chat_id=user_id,
                                 text=message_text,
-                                parse_mode='Markdown'
+                                parse_mode='Markdown',
+                                disable_notification=True  # БЕЗ звука (фоновое)
                             )
                             
                             # Закрепляем сообщение
@@ -1563,7 +1571,7 @@ class MultiScheduleBot:
                                     disable_notification=True
                                 )
                             except:
-                                pass  # Не критично если не получилось закрепить
+                                pass
                             
                             # Сохраняем ID сообщения
                             self.db.save_daily_message_id(user_id, sent_message.message_id)
@@ -1573,19 +1581,16 @@ class MultiScheduleBot:
                         except Exception as e:
                             logger.error(f"Ошибка отправки ежедневного расписания {user_id}: {e}")
                     
-                    # В течение дня - обновляем существующее сообщение (каждые 5 минут или перед парой)
-                    elif daily_message_id:
-                        # Обновляем только если есть изменения (следующая пара близко)
-                        next_class = NotificationManager.get_next_class(schedule_json, user['timezone'])
+                    # В течение дня - обновляем существующее сообщение
+                    elif daily_message_id and 8 <= current_hour <= 21:
+                        next_class = NotificationManager.get_next_class(schedule_json, timezone)
                         
-                        # Обновляем если:
-                        # 1. До следующей пары < 15 минут
-                        # 2. Каждые 5 минут в рабочее время (8:00-18:00)
+                        # Обновляем каждые 5 минут или если до пары < 15 минут
                         should_update = False
                         
                         if next_class and next_class.get('minutes_until', 999) < 15:
                             should_update = True
-                        elif 8 <= current_hour <= 18 and datetime.now().minute % 5 == 0:
+                        elif current_minute % 5 == 0:  # Каждые 5 минут
                             should_update = True
                         
                         if should_update:
@@ -1598,11 +1603,62 @@ class MultiScheduleBot:
                                 )
                                 logger.debug(f"🔄 Обновлено расписание для {user_id}")
                             except Exception as e:
-                                # Если не удалось обновить (сообщение удалено) - отправляем новое
                                 if "message to edit not found" in str(e).lower():
                                     self.db.save_daily_message_id(user_id, None)
                     
-                    # В конце дня (после 22:00) - сбрасываем ID чтобы завтра отправить новое
+                    # ============================================
+                    # 2. PUSH-УВЕДОМЛЕНИЯ ЗА 10 МИНУТ
+                    # ============================================
+                    
+                    next_class = NotificationManager.get_next_class(schedule_json, timezone)
+                    
+                    if next_class:
+                        minutes_until = next_class.get('minutes_until', 999)
+                        class_time = next_class.get('time_start', '')
+                        
+                        # Проверяем: пора ли отправлять уведомление?
+                        if minutes_before <= minutes_until <= minutes_before + 1:
+                            # Проверяем не отправляли ли уже сегодня для этой пары
+                            if not self.db.was_notification_sent(user_id, class_time, current_date):
+                                try:
+                                    # Формируем КОРОТКОЕ уведомление для push
+                                    subject = next_class['subject']
+                                    room = next_class.get('room', '')
+                                    time_range = f"{next_class['time_start']}-{next_class['time_end']}"
+                                    
+                                    # ВАЖНО: Первые 2 строки видны в push-уведомлении!
+                                    push_message = (
+                                        f"🔔 *{subject}*\n"
+                                        f"🚪 {room} • ⏰ {next_class['time_start']} (через {minutes_until} мин)\n\n"
+                                        f"📅 Группа: {group}\n"
+                                        f"⏱ {time_range}\n\n"
+                                        f"💨 Не опаздывай!"
+                                    )
+                                    
+                                    # Отправляем с ЗВУКОМ (disable_notification=False)
+                                    sent_notif = await self.app.bot.send_message(
+                                        chat_id=user_id,
+                                        text=push_message,
+                                        parse_mode='Markdown',
+                                        disable_notification=False  # СО ЗВУКОМ! Push придет!
+                                    )
+                                    
+                                    logger.info(f"🔔 Push-уведомление отправлено {user_id} о паре {subject}")
+                                    
+                                    # Отмечаем что отправили
+                                    self.db.mark_notification_sent(user_id, class_time, current_date)
+                                    
+                                    # Планируем УДАЛЕНИЕ через 5 минут (не засоряет чат)
+                                    self.app.job_queue.run_once(
+                                        callback=lambda ctx: self._delete_notification(user_id, sent_notif.message_id),
+                                        when=timedelta(minutes=5),
+                                        name=f'delete_notif_{user_id}_{sent_notif.message_id}'
+                                    )
+                                    
+                                except Exception as e:
+                                    logger.error(f"Ошибка отправки push-уведомления {user_id}: {e}")
+                    
+                    # В конце дня - сбрасываем
                     if current_hour >= 22 and daily_message_id:
                         self.db.save_daily_message_id(user_id, None)
                         logger.debug(f"🌙 Сброшено ежедневное сообщение для {user_id}")
@@ -1613,6 +1669,14 @@ class MultiScheduleBot:
         
         except Exception as e:
             logger.error(f"Ошибка check_class_notifications: {e}")
+    
+    async def _delete_notification(self, chat_id: int, message_id: int):
+        """Удалить уведомление (вызывается через 5 минут)"""
+        try:
+            await self.app.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            logger.debug(f"🗑️ Удалено уведомление {message_id} для {chat_id}")
+        except Exception as e:
+            logger.debug(f"Не удалось удалить уведомление: {e}")
     
     async def cleanup_old_logs(self, context: ContextTypes.DEFAULT_TYPE = None):
         """Автоматическая очистка старых логов и уведомлений"""
